@@ -262,7 +262,7 @@ void AddTrayIcon() {
     data.uCallbackMessage = kTrayMessage;
     data.hIcon = g_trayIcon;
     wcsncpy(data.szTip, L"NetSpeed", _countof(data.szTip) - 1);
-    data.szTip[_countof(data.szTip) - 1] = L'\\0';
+    data.szTip[_countof(data.szTip) - 1] = L'\0';
     Shell_NotifyIconW(NIM_ADD, &data);
 
 }
