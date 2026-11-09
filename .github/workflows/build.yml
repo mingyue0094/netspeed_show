@@ -1,0 +1,64 @@
+name: Build Windows x86_64
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "main.cpp"
+      - ".github/workflows/build.yml"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build NetSpeed x86_64
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+
+      - name: Compile 64-bit Windows executable
+        shell: msys2 {0}
+        run: |
+          g++ main.cpp \
+            -o NetSpeed-x86_64.exe \
+            -std=c++17 \
+            -O2 \
+            -s \
+            -DNDEBUG \
+            -mwindows \
+            -municode \
+            -static \
+            -static-libgcc \
+            -static-libstdc++ \
+            -liphlpapi \
+            -lgdi32 \
+            -luser32 \
+            -lshell32 \
+            -lcomctl32
+
+      - name: Verify executable architecture
+        shell: msys2 {0}
+        run: |
+          file NetSpeed-x86_64.exe
+          objdump -f NetSpeed-x86_64.exe | grep -E "pei-x86-64|architecture: i386:x86-64"
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetSpeed-Windows-x86_64
+          path: NetSpeed-x86_64.exe
+          if-no-files-found: error
+          retention-days: 30
