@@ -1,10 +1,13 @@
 #define UNICODE
 #define _UNICODE
 #define WIN32_LEAN_AND_MEAN
+#define _WIN32_WINNT 0x0601
+#define NTDDI_VERSION 0x06010000
 
 #include <windows.h>
 #include <shellapi.h>
 #include <iphlpapi.h>
+#include <ipifcons.h>
 #include <netioapi.h>
 #include <cstdint>
 #include <cwchar>
