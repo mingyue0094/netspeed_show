@@ -2,13 +2,11 @@
 #define _UNICODE
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0601
-#define NTDDI_VERSION 0x06010000
 
 #include <windows.h>
 #include <shellapi.h>
 #include <iphlpapi.h>
 #include <ipifcons.h>
-#include <netioapi.h>
 #include <cstdint>
 #include <cwchar>
 #include <string>
@@ -34,7 +32,8 @@ constexpr COLORREF kDownloadColor = RGB(74, 222, 128);
 constexpr COLORREF kUploadColor = RGB(96, 165, 250);
 
 struct Adapter {
-    NET_LUID luid{};
+    DWORD index = 0;
+    DWORD type = 0;
     std::wstring name;
     bool connected = false;
 };
@@ -43,9 +42,9 @@ HWND g_window = nullptr;
 HFONT g_font = nullptr;
 HICON g_trayIcon = nullptr;
 HANDLE g_mutex = nullptr;
-
 std::vector<Adapter> g_menuAdapters;
-ULONGLONG g_selectedLuid = 0; // 0 = aggregate active physical adapters
+
+DWORD g_selectedIndex = 0; // 0 = aggregate active Ethernet/Wi-Fi adapters
 std::wstring g_selectedName = L"自动汇总";
 ULONGLONG g_lastIn = 0;
 ULONGLONG g_lastOut = 0;
@@ -56,26 +55,56 @@ bool g_haveSample = false;
 bool g_paused = false;
 bool g_displayVisible = true;
 
+// GetIfTable is supported by all target Windows versions and avoids
+// MinGW header-version inconsistencies around MIB_IF_TABLE2.
+bool ReadInterfaceTable(std::vector<BYTE>& storage, PMIB_IFTABLE& table) {
+    ULONG size = 0;
+    DWORD result = GetIfTable(nullptr, &size, FALSE);
+    if (result != ERROR_INSUFFICIENT_BUFFER || size == 0)
+        return false;
+
+    storage.resize(size);
+    table = reinterpret_cast<PMIB_IFTABLE>(storage.data());
+    result = GetIfTable(table, &size, FALSE);
+    return result == NO_ERROR;
+}
+
+std::wstring GetAdapterName(const MIB_IFROW& row) {
+    if (row.dwDescrLen > 0) {
+        wchar_t name[512]{};
+        int count = MultiByteToWideChar(
+            CP_ACP, 0, reinterpret_cast<const char*>(row.bDescr),
+            static_cast<int>(row.dwDescrLen), name,
+            static_cast<int>(_countof(name) - 1));
+        if (count > 0)
+            return std::wstring(name, count);
+    }
+
+    wchar_t fallback[64]{};
+    swprintf(fallback, _countof(fallback), L"网络接口 %lu",
+        static_cast<unsigned long>(row.dwIndex));
+    return fallback;
+}
+
 std::vector<Adapter> EnumerateAdapters() {
     std::vector<Adapter> adapters;
-    PMIB_IF_TABLE2 table = nullptr;
-    if (GetIfTable2(&table) != NO_ERROR || table == nullptr)
+    std::vector<BYTE> storage;
+    PMIB_IFTABLE table = nullptr;
+    if (!ReadInterfaceTable(storage, table))
         return adapters;
 
-    for (ULONG i = 0; i < table->NumEntries; ++i) {
-        const MIB_IF_ROW2& row = table->Table[i];
-        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK)
+    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+        const MIB_IFROW& row = table->table[i];
+        if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK)
             continue;
 
         Adapter item;
-        item.luid = row.InterfaceLuid;
-        item.connected = row.OperStatus == IfOperStatusUp;
-        item.name = row.Alias[0] ? row.Alias : row.Description;
-        if (item.name.empty())
-            item.name = L"未命名网卡";
+        item.index = row.dwIndex;
+        item.type = row.dwType;
+        item.name = GetAdapterName(row);
+        item.connected = row.dwOperStatus == IF_OPER_STATUS_OPERATIONAL;
         adapters.push_back(std::move(item));
     }
-    FreeMibTable(table);
 
     std::sort(adapters.begin(), adapters.end(),
         [](const Adapter& a, const Adapter& b) {
@@ -88,37 +117,40 @@ bool ReadNetworkCounters(ULONGLONG& received, ULONGLONG& sent) {
     received = 0;
     sent = 0;
 
-    PMIB_IF_TABLE2 table = nullptr;
-    if (GetIfTable2(&table) != NO_ERROR || table == nullptr)
+    std::vector<BYTE> storage;
+    PMIB_IFTABLE table = nullptr;
+    if (!ReadInterfaceTable(storage, table))
         return false;
 
     bool found = false;
-    for (ULONG i = 0; i < table->NumEntries; ++i) {
-        const MIB_IF_ROW2& row = table->Table[i];
-        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK)
+    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+        const MIB_IFROW& row = table->table[i];
+        if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK)
             continue;
 
-        if (g_selectedLuid != 0) {
-            if (row.InterfaceLuid.Value != g_selectedLuid)
+        if (g_selectedIndex != 0) {
+            if (row.dwIndex != g_selectedIndex)
                 continue;
 
             found = true;
-            if (row.OperStatus == IfOperStatusUp) {
-                received = row.InOctets;
-                sent = row.OutOctets;
+            if (row.dwOperStatus == IF_OPER_STATUS_OPERATIONAL) {
+                received = row.dwInOctets;
+                sent = row.dwOutOctets;
             }
             break;
         }
 
-        if (!row.HardwareInterface || row.OperStatus != IfOperStatusUp)
+        // Aggregate physical Ethernet and Wi-Fi only.
+        if ((row.dwType != IF_TYPE_ETHERNET_CSMACD &&
+             row.dwType != IF_TYPE_IEEE80211) ||
+            row.dwOperStatus != IF_OPER_STATUS_OPERATIONAL)
             continue;
 
-        received += row.InOctets;
-        sent += row.OutOctets;
+        received += row.dwInOctets;
+        sent += row.dwOutOctets;
         found = true;
     }
 
-    FreeMibTable(table);
     return found;
 }
 
@@ -164,10 +196,12 @@ void UpdateSpeed() {
         return;
 
     const double seconds = static_cast<double>(elapsed) / 1000.0;
-    g_downloadBytesPerSecond =
-        in >= g_lastIn ? static_cast<double>(in - g_lastIn) / seconds : 0.0;
-    g_uploadBytesPerSecond =
-        out >= g_lastOut ? static_cast<double>(out - g_lastOut) / seconds : 0.0;
+    // MIB_IFROW counters are 32-bit; unsigned subtraction handles one wrap.
+    const DWORD deltaIn = static_cast<DWORD>(in) - static_cast<DWORD>(g_lastIn);
+    const DWORD deltaOut = static_cast<DWORD>(out) - static_cast<DWORD>(g_lastOut);
+
+    g_downloadBytesPerSecond = static_cast<double>(deltaIn) / seconds;
+    g_uploadBytesPerSecond = static_cast<double>(deltaOut) / seconds;
 
     g_lastIn = in;
     g_lastOut = out;
@@ -189,7 +223,6 @@ void UpdateTrayTooltip() {
     wchar_t up[64]{};
     FormatSpeed(g_downloadBytesPerSecond, down, _countof(down));
     FormatSpeed(g_uploadBytesPerSecond, up, _countof(up));
-
     swprintf(data.szTip, _countof(data.szTip),
         L"%s\n下载: %s\n上传: %s",
         g_selectedName.c_str(), down, up);
@@ -209,8 +242,6 @@ void PositionDisplay() {
     if (taskbar && GetWindowRect(taskbar, &taskRect)) {
         HWND tray = FindWindowExW(taskbar, nullptr, L"TrayNotifyWnd", nullptr);
         if (tray && GetWindowRect(tray, &trayRect)) {
-            // Typical horizontal taskbar: reserve a compact strip immediately
-            // to the left of the notification area.
             x = trayRect.left - kWindowWidth - 8;
             y = taskRect.top + (taskRect.bottom - taskRect.top - kWindowHeight) / 2;
         } else {
@@ -267,7 +298,6 @@ void AddTrayIcon() {
     wcsncpy(data.szTip, L"NetSpeed", _countof(data.szTip) - 1);
     data.szTip[_countof(data.szTip) - 1] = L'\0';
     Shell_NotifyIconW(NIM_ADD, &data);
-
 }
 
 void RemoveTrayIcon() {
@@ -278,10 +308,10 @@ void RemoveTrayIcon() {
     Shell_NotifyIconW(NIM_DELETE, &data);
 }
 
-void SelectAdapter(ULONGLONG luid, const std::wstring& name) {
-    g_selectedLuid = luid;
+void SelectAdapter(DWORD index, const std::wstring& name) {
+    g_selectedIndex = index;
     g_selectedName = name;
-    ResetSampling(); // New interface gets a fresh baseline; no false spikes.
+    ResetSampling();
     UpdateTrayTooltip();
 }
 
@@ -293,7 +323,7 @@ void AddAdapterSubmenu(HMENU root) {
     g_menuAdapters = EnumerateAdapters();
 
     AppendMenuW(submenu,
-        MF_STRING | (g_selectedLuid == 0 ? MF_CHECKED : 0),
+        MF_STRING | (g_selectedIndex == 0 ? MF_CHECKED : 0),
         kMenuAuto, L"自动汇总活动物理网卡");
     AppendMenuW(submenu, MF_SEPARATOR, 0, nullptr);
 
@@ -308,7 +338,7 @@ void AddAdapterSubmenu(HMENU root) {
             adapter.name.c_str(), adapter.connected ? L"已连接" : L"未连接");
 
         UINT flags = MF_STRING;
-        if (adapter.luid.Value == g_selectedLuid)
+        if (adapter.index == g_selectedIndex)
             flags |= MF_CHECKED;
         if (!adapter.connected)
             flags |= MF_GRAYED;
@@ -372,7 +402,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     case WM_ERASEBKGND:
         return 1;
 
-    // The speed strip is display-only; right-click the tray icon for controls.
     case WM_NCHITTEST:
         return HTTRANSPARENT;
 
@@ -397,7 +426,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const size_t index = id - kMenuNicBase;
             const Adapter& adapter = g_menuAdapters[index];
             if (adapter.connected)
-                SelectAdapter(adapter.luid.Value, adapter.name);
+                SelectAdapter(adapter.index, adapter.name);
             return 0;
         }
 
