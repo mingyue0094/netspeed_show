@@ -264,9 +264,6 @@ void AddTrayIcon() {
     wcscpy_s(data.szTip, _countof(data.szTip), L"NetSpeed");
     Shell_NotifyIconW(NIM_ADD, &data);
 
-    // Request modern notification-area behavior.
-    data.uVersion = NOTIFYICON_VERSION_4;
-    Shell_NotifyIconW(NIM_SETVERSION, &data);
 }
 
 void RemoveTrayIcon() {
