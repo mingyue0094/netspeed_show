@@ -121,10 +121,10 @@ bool ReadNetworkCounters(ULONGLONG& received, ULONGLONG& sent) {
 
 void FormatSpeed(double bytesPerSecond, wchar_t* output, size_t capacity) {
     if (bytesPerSecond >= 1024.0 * 1024.0) {
-        swprintf_s(output, capacity, L"%.2f MB/s",
+        swprintf(output, capacity, L"%.2f MB/s",
             bytesPerSecond / (1024.0 * 1024.0));
     } else {
-        swprintf_s(output, capacity, L"%.2f KB/s",
+        swprintf(output, capacity, L"%.2f KB/s",
             bytesPerSecond / 1024.0);
     }
 }
@@ -187,7 +187,7 @@ void UpdateTrayTooltip() {
     FormatSpeed(g_downloadBytesPerSecond, down, _countof(down));
     FormatSpeed(g_uploadBytesPerSecond, up, _countof(up));
 
-    swprintf_s(data.szTip, _countof(data.szTip),
+    swprintf(data.szTip, _countof(data.szTip),
         L"%s\n下载: %s\n上传: %s",
         g_selectedName.c_str(), down, up);
     Shell_NotifyIconW(NIM_MODIFY, &data);
@@ -236,8 +236,8 @@ void PaintDisplay(HDC dc) {
     wchar_t upText[80]{};
     FormatSpeed(g_downloadBytesPerSecond, down, _countof(down));
     FormatSpeed(g_uploadBytesPerSecond, up, _countof(up));
-    swprintf_s(downText, _countof(downText), L"\u2193 %s", down);
-    swprintf_s(upText, _countof(upText), L"\u2191 %s", up);
+    swprintf(downText, _countof(downText), L"\u2193 %s", down);
+    swprintf(upText, _countof(upText), L"\u2191 %s", up);
 
     RECT left{ 8, 0, 180, kWindowHeight };
     RECT right{ 185, 0, kWindowWidth - 5, kWindowHeight };
@@ -261,7 +261,8 @@ void AddTrayIcon() {
     data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     data.uCallbackMessage = kTrayMessage;
     data.hIcon = g_trayIcon;
-    wcscpy_s(data.szTip, _countof(data.szTip), L"NetSpeed");
+    wcsncpy(data.szTip, L"NetSpeed", _countof(data.szTip) - 1);
+    data.szTip[_countof(data.szTip) - 1] = L'\\0';
     Shell_NotifyIconW(NIM_ADD, &data);
 
 }
@@ -300,7 +301,7 @@ void AddAdapterSubmenu(HMENU root) {
 
         const UINT id = kMenuNicBase + static_cast<UINT>(count);
         wchar_t label[512]{};
-        swprintf_s(label, _countof(label), L"%s  [%s]",
+        swprintf(label, _countof(label), L"%s  [%s]",
             adapter.name.c_str(), adapter.connected ? L"已连接" : L"未连接");
 
         UINT flags = MF_STRING;
